@@ -4,15 +4,17 @@ This directory is intended to store the preprocessed datasets used for evaluatin
 
 By placing the datasets here at the parent directory level, multiple algorithm-specific repositories can share the same underlying data files without duplicating gigabytes of information.
 
-📊 Evaluated Datasets
+📊 Evaluated Datasets & Downloads
 
 The FedWLA architecture was rigorously evaluated on four representative, publicly available datasets that cover a wide range of IoT and IIoT network traffic characteristics.
 
-To fully replicate the experiments detailed in the manuscript, researchers should procure and preprocess the following datasets:
+You can download the raw versions of these datasets from the following Kaggle repositories:
 
 1. Edge-IIoTset
 
 Environment: IoT / IIoT
+
+Download Link: https://www.kaggle.com/datasets/mohamedamineferrag/edgeiiotset-cyber-security-dataset-of-iot-iiot
 
 Description: A highly realistic dataset featuring traffic from various devices and multiple attack types. It is specifically designed to reflect realistic edge scenarios, making it highly suitable for evaluating intrusion detection models in both centralised and federated contexts.
 
@@ -20,11 +22,15 @@ Description: A highly realistic dataset featuring traffic from various devices a
 
 Environment: IIoT
 
+Download Link: https://www.kaggle.com/datasets/munaalhawawreh/xiiotid-iiot-intrusion-dataset
+
 Description: A connectivity-agnostic and device-agnostic dataset focused on Industrial IoT. It provides statistical traffic features, network information, and protocol fields, enabling versatile multiclass evaluation.
 
 3. WUSTL-IIoT-2021
 
 Environment: IIoT
+
+Download Link: https://www.kaggle.com/datasets/annaamalaiu/wustl-iiot-2021-dataset
 
 Description: Based on real traffic captured in industrial environments using multiple protocols (Modbus, OPC UA, MQTT, etc.). It is labelled at the network flow level, comprising benign sessions and simulated attack sequences.
 
@@ -32,18 +38,26 @@ Description: Based on real traffic captured in industrial environments using mul
 
 Environment: IoT
 
+Download Link: https://www.kaggle.com/datasets/astralfate/iot23-dataset
+
 Description: Contains 23 scenarios of benign and malicious traffic from IoT devices. It heavily features volumetric botnet attacks (such as Mirai and Gafgyt), facilitating robustness analysis against repetitive mass-scale attacks.
 
-⚙️ Preprocessing Requirements
+⚙️ Preprocessing Pipeline
 
-Please note that the federated simulation code expects these datasets to be strictly preprocessed before execution. Ensure that your CSV files meet the following criteria:
+Please note that the federated simulation code expects these datasets to be strictly preprocessed before execution. Feeding raw data directly into the simulation will result in errors or data leakage.
 
-Fully Numerical: All categorical features must be encoded (e.g., one-hot encoding).
+To faithfully replicate the methodology detailed in the manuscript (Section 4.3), ensure your preprocessing scripts apply the following pipeline to the raw CSV files:
 
-No Identifiers: Timestamps, IP addresses, MAC addresses, and session IDs must be removed to prevent data leakage and memorisation.
+Data Cleaning: Remove all rows containing null (NaN/missing) values and drop exact duplicate records to ensure data integrity.
 
-Cleaned: Null values and duplicate records should be addressed.
+Identifier Removal: Strip out any session identifiers, IP addresses, MAC addresses, and timestamps to prevent the models from memorising specific sessions (data leakage).
 
-Label Column: The dataset must contain a target column (typically named Attack) with integer values representing the specific classes.
+Categorical Encoding: Transform all remaining non-numerical attributes (e.g., categorical flags or text) into a purely numerical format using One-Hot Encoding.
 
-Place your preprocessed .csv files directly in this folder and update the dataset-path configuration in the pyproject.toml file of the corresponding experiment repository.
+Logarithmic Transformation: Identify numerical attributes exhibiting strong positive or negative skewness (e.g., skewness threshold > 3.0, such as byte counts). Apply a logarithmic scaling (e.g., log1p) to normalise these distributions.
+
+Standardisation: Apply standard scaling (StandardScaler) to all features so that they have a mean of zero and a unit variance ($\mu = 0, \sigma = 1$).
+
+Memory Optimisation: Downcast all 64-bit floating-point and integer columns to 32 bits. This drastically reduces RAM consumption during the distributed federated training process.
+
+Once processed, save the resulting .csv files directly in this folder and update the dataset-path configuration in the pyproject.toml file of the corresponding experiment repository.

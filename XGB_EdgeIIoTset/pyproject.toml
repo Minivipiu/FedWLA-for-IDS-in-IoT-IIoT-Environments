@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xgb-fedwla"
+version = "1.0.0"
+description = "Federated Hyperparameter Optimisation (HPO) for XGBoost using FedWLA strategy"
+license = "MIT"
+dependencies = [
+    "flwr[simulation]>=1.19.0",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "xgboost",
+    "filelock"
+]
+
+[tool.flwr.app]
+publisher = "minivipiu"
+
+[tool.flwr.app.components]
+serverapp = "xgb_fedwla.server:app"
+clientapp = "xgb_fedwla.client:app"
+
+[tool.flwr.app.config]
+num-server-rounds = 10
+dataset-path = "../data/EdgeIIoT_cleaned.csv"
+imbalance-factor = 5
+num-partitions = 10
+

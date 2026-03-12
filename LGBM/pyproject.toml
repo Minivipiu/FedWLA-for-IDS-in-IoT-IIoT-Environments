@@ -25,6 +25,6 @@ clientapp = "lgbm_fedwla.client:app"
 
 [tool.flwr.app.config]
 num-server-rounds = 10
-dataset-path = "/home/minivipiu2/Escritorio/Federated_unsupervised/Datasets/EdgeIIoT/EdgeIIoT_cleaned.csv"
+dataset-path = "../data/EdgeIIoT_cleaned.csv"
 imbalance-factor = 5
 num-partitions = 10

@@ -26,8 +26,8 @@ def server_fn(context: Context):
     initial_parameters = ndarrays_to_parameters([initial_ndarray])
 
     strategy = FedWLA(
-        fraction_fit=0.8,      
-        fraction_evaluate=0.8,
+        fraction_fit=1,      
+        fraction_evaluate=1,
         evaluate_metrics_aggregation_fn=weighted_average,
         initial_parameters=initial_parameters,
     )

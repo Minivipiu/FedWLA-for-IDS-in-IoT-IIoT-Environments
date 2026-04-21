@@ -8,7 +8,7 @@ from pathlib import Path
 from filelock import FileLock
 import pandas as pd
 import numpy as np
-import xgboost as xgb
+from catboost import CatBoostClassifier
 from sklearn.model_selection import train_test_split
 
 PARTITION_SEED = 42
@@ -200,10 +200,10 @@ def get_partition(partition_id: int, num_partitions: int, dataset_path: str, imb
 
     dataset_name = Path(dataset_path).stem
     cache_prefix = cache_dir / (
-        f"part_{CACHE_VERSION}_{dataset_name}_{num_partitions}_{imbalance_factor}_{PARTITION_SEED}"
+        f"part_cb_{CACHE_VERSION}_{dataset_name}_{num_partitions}_{imbalance_factor}_{PARTITION_SEED}"
     )
     lock_file = cache_dir / (
-        f"data_prep_{CACHE_VERSION}_{dataset_name}_{num_partitions}_{imbalance_factor}_{PARTITION_SEED}.lock"
+        f"data_prep_cb_{CACHE_VERSION}_{dataset_name}_{num_partitions}_{imbalance_factor}_{PARTITION_SEED}.lock"
     )
     target_cache_file = Path(f"{cache_prefix}_{partition_id}.pkl")
 
@@ -212,10 +212,12 @@ def get_partition(partition_id: int, num_partitions: int, dataset_path: str, imb
             data = pd.read_csv(dataset_path, low_memory=False)
             data = data.dropna()
 
+            label_col = "Attack" if "Attack" in data.columns else "Traffic"
+
             partitions = create_noniid_partitions_weighted(
                 df=data,
                 num_clients=num_partitions,
-                label_col="Attack",
+                label_col=label_col,
                 imbalance_factor=imbalance_factor,
             )
 
@@ -226,13 +228,14 @@ def get_partition(partition_id: int, num_partitions: int, dataset_path: str, imb
     with open(target_cache_file, "rb") as f:
         partition = pickle.load(f)
 
-    local_y = partition["Attack"].astype(int).values
+    label_col = "Attack" if "Attack" in partition.columns else "Traffic"
+    local_y = partition[label_col].astype(int).values
     local_num_examples = len(partition)
     local_data_quality = calculate_balance_quality(local_y)
 
     train, test = _safe_local_train_test_split(
         partition,
-        label_col="Attack",
+        label_col=label_col,
         test_size=0.2,
         random_state=PARTITION_SEED,
     )
@@ -243,17 +246,17 @@ def get_partition(partition_id: int, num_partitions: int, dataset_path: str, imb
     if train_idx.intersection(test_idx):
         raise RuntimeError("Sample leakage detected between local train and test splits.")
 
-    X_train = train.drop(columns=["Attack"], errors="ignore").values
-    y_train = train["Attack"].astype(int).values
-    X_test = test.drop(columns=["Attack"], errors="ignore").values
-    y_test = test["Attack"].astype(int).values
+    X_train = train.drop(columns=[label_col], errors="ignore").values
+    y_train = train[label_col].astype(int).values
+    X_test = test.drop(columns=[label_col], errors="ignore").values
+    y_test = test[label_col].astype(int).values
 
     return X_train, y_train, X_test, y_test, local_num_examples, local_data_quality
 
 
 
-def calculate_uncertainty(model: xgb.XGBClassifier, X: np.ndarray) -> float:
-    """Calculate the average entropy of the predictions."""
+def calculate_uncertainty(model: CatBoostClassifier, X: np.ndarray) -> float:
+    """Calculate the average entropy of the model predictions."""
     try:
         probabilities = model.predict_proba(X)
         entropies = []

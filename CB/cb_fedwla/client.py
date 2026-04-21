@@ -1,13 +1,8 @@
-"""Federated Client Module for LightGBM."""
-
-import warnings
+"""Federated Client Module for CatBoost."""
 
 import numpy as np
-import lightgbm as lgb
+from catboost import CatBoostClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
-warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.utils.validation")
-warnings.filterwarnings("ignore", category=UserWarning, message=".*valid feature names.*")
 
 from flwr.client import NumPyClient, ClientApp
 from flwr.common import Context
@@ -18,7 +13,7 @@ RANDOM_SEARCH_SEED = 42
 
 
 class FlowerClient(NumPyClient):
-    """Federated client for LightGBM local hyperparameter optimisation."""
+    """Federated client for CatBoost local hyperparameter optimisation."""
 
     def __init__(
         self,
@@ -40,47 +35,43 @@ class FlowerClient(NumPyClient):
 
         self.rng = np.random.default_rng(RANDOM_SEARCH_SEED + partition_id)
 
-        # Random initialisation, coherent with the manuscript Table 5.
-        self.init_max_depth = int(self.rng.integers(4, 9))
-        self.init_lr = round(float(self.rng.uniform(0.01, 0.1)), 4)
-        self.init_n_estimators = int(self.rng.integers(100, 501))
-        self.init_num_leaves = int(self.rng.integers(16, 31))  # [16, 30]
+        # Random initialisation coherent with Table 5.
+        self.init_iterations = int(self.rng.integers(20, 101))
+        self.init_depth = int(self.rng.integers(4, 9))
+        self.init_lr = round(float(self.rng.uniform(0.05, 0.30)), 4)
 
-    def _sanitise_params(self, params: np.ndarray) -> tuple[int, float, int, int]:
-        """Clamp hyperparameters to valid LightGBM ranges."""
-        max_depth = max(1, int(np.round(float(params[0]))))
-        learning_rate = max(0.001, float(params[1]))
-        n_estimators = max(6, int(np.round(float(params[2]))))
-        num_leaves = max(2, int(np.round(float(params[3]))))
-        return max_depth, learning_rate, n_estimators, num_leaves
+    def _sanitise_params(self, params: np.ndarray) -> tuple[int, int, float]:
+        """Clamp hyperparameters to valid CatBoost ranges."""
+        iterations = max(10, int(np.round(float(params[0]))))
+        depth = max(1, int(np.round(float(params[1]))))
+        learning_rate = max(0.001, float(params[2]))
+        return iterations, depth, learning_rate
 
     def _build_model(
         self,
-        max_depth: int,
+        iterations: int,
+        depth: int,
         learning_rate: float,
-        n_estimators: int,
-        num_leaves: int,
-    ) -> lgb.LGBMClassifier:
-        """Create a LightGBM model with the fixed settings used in the study."""
-        return lgb.LGBMClassifier(
-            max_depth=max_depth,
+    ) -> CatBoostClassifier:
+        """Create a CatBoost model with the fixed settings used in the study."""
+        return CatBoostClassifier(
+            iterations=iterations,
+            depth=depth,
             learning_rate=learning_rate,
-            n_estimators=n_estimators,
-            num_leaves=num_leaves,
-            min_child_samples=80,
-            colsample_bytree=0.8,
-            subsample=0.8,
-            reg_lambda=2.0,
-            n_jobs=-1,
-            random_state=RANDOM_SEARCH_SEED + self.partition_id,
-            verbose=-1,
+            loss_function="MultiClass",
+            task_type="CPU",
+            verbose=0,
+            allow_writing_files=False,
+            thread_count=-1,
+            random_seed=RANDOM_SEARCH_SEED + self.partition_id,
         )
 
-    def _fit_and_score(self, cfg: tuple[int, float, int, int]) -> tuple[lgb.LGBMClassifier, float]:
+    def _fit_and_score(self, cfg: tuple[int, int, float]) -> tuple[CatBoostClassifier, float]:
         """Train a model and compute weighted F1 on the local evaluation split."""
         model = self._build_model(*cfg)
         model.fit(self.X_train, self.y_train)
         y_pred = model.predict(self.X_test)
+        y_pred = np.asarray(y_pred).reshape(-1)
         score = f1_score(self.y_test, y_pred, average="weighted", zero_division=0)
         return model, float(score)
 
@@ -88,10 +79,9 @@ class FlowerClient(NumPyClient):
         """Return the client's random initial hyperparameters."""
         hyperparams = np.array(
             [
-                self.init_max_depth,
+                self.init_iterations,
+                self.init_depth,
                 self.init_lr,
-                self.init_n_estimators,
-                self.init_num_leaves,
             ],
             dtype=np.float32,
         )
@@ -107,14 +97,16 @@ class FlowerClient(NumPyClient):
         best_local_config = global_cfg
 
         # Local bounded random search around the current global configuration.
-        global_max_depth, global_lr, global_n_estimators, global_num_leaves = global_cfg
+        global_iters, global_depth, global_lr = global_cfg
         for _ in range(3):
-            md = int(self.rng.integers(max(1, global_max_depth - 3), global_max_depth + 4))
-            lr_ = float(self.rng.uniform(max(0.001, global_lr * 0.5), global_lr * 1.5))
-            ne = int(self.rng.integers(max(6, global_n_estimators - 2), global_n_estimators + 3))
-            nl = int(self.rng.integers(max(2, global_num_leaves - 2), global_num_leaves + 3))
+            iters = int(self.rng.integers(max(10, global_iters - 10), global_iters + 11))
+            depth = int(self.rng.integers(max(2, global_depth - 1), global_depth + 3))
 
-            candidate_cfg = (md, lr_, ne, nl)
+            lr_min = max(0.01, global_lr * 0.8)
+            lr_max = min(1.0, global_lr * 1.2)
+            lr_ = float(self.rng.uniform(lr_min, lr_max))
+
+            candidate_cfg = (iters, depth, lr_)
             candidate_model, candidate_f1 = self._fit_and_score(candidate_cfg)
             if candidate_f1 > best_local_f1:
                 best_model = candidate_model
@@ -125,6 +117,7 @@ class FlowerClient(NumPyClient):
         self.model = best_model
 
         y_pred_final = self.model.predict(self.X_test)
+        y_pred_final = np.asarray(y_pred_final).reshape(-1)
         final_accuracy = accuracy_score(self.y_test, y_pred_final)
         final_f1 = f1_score(self.y_test, y_pred_final, average="weighted", zero_division=0)
 
@@ -145,7 +138,6 @@ class FlowerClient(NumPyClient):
 
         best_local_params = [np.array(best_local_config, dtype=np.float32)]
 
-        # Important: num_examples equals |D_local|, coherent with FedWLA Eq. 7.
         return best_local_params, self.local_num_examples, metrics
 
     def evaluate(self, parameters, config):
@@ -157,6 +149,7 @@ class FlowerClient(NumPyClient):
         temp_model.fit(self.X_train, self.y_train)
 
         y_pred = temp_model.predict(self.X_test)
+        y_pred = np.asarray(y_pred).reshape(-1)
 
         accuracy = accuracy_score(self.y_test, y_pred)
         precision = precision_score(self.y_test, y_pred, average="weighted", zero_division=0)
@@ -173,7 +166,7 @@ class FlowerClient(NumPyClient):
 
 
 def client_fn(context: Context):
-    """Client App constructor."""
+    """Federated client constructor."""
     partition_id = int(context.node_config["partition-id"])
     num_partitions = context.run_config.get("num-partitions", 10)
     dataset_path = context.run_config.get("dataset-path", "")

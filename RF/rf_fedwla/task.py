@@ -8,7 +8,7 @@ from pathlib import Path
 from filelock import FileLock
 import pandas as pd
 import numpy as np
-import xgboost as xgb
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
 PARTITION_SEED = 42
@@ -38,16 +38,11 @@ def create_noniid_partitions_weighted(
         rng.shuffle(idx_c)
 
         if n_c >= num_clients:
-            # Guarantee at least one sample per client whenever the data allow it.
             counts = np.ones(num_clients, dtype=int)
             remaining = n_c - num_clients
 
             if remaining > 0:
-                raw_weights = rng.integers(
-                    low=1,
-                    high=imbalance_factor + 1,
-                    size=num_clients,
-                ).astype(float)
+                raw_weights = rng.integers(low=1, high=imbalance_factor + 1, size=num_clients).astype(float)
                 weights = raw_weights / raw_weights.sum()
                 expected_extra = weights * remaining
                 extra_counts = np.floor(expected_extra).astype(int)
@@ -60,7 +55,6 @@ def create_noniid_partitions_weighted(
                     for idx_client in order[:remainder]:
                         counts[idx_client] += 1
         else:
-            # Assign the available samples to a random subset of clients.
             counts = np.zeros(num_clients, dtype=int)
             selected_clients = rng.permutation(num_clients)[:n_c]
             counts[selected_clients] = 1
@@ -75,7 +69,6 @@ def create_noniid_partitions_weighted(
         if start != n_c:
             raise RuntimeError(f"Partitioning error for class {c!r}: assigned {start} != total {n_c}.")
 
-    # Strict disjointness audit.
     seen = set()
     for idxs in client_indices:
         idx_set = set(idxs)
@@ -147,10 +140,9 @@ def _safe_local_train_test_split(
         for cls in counts.index
     }
 
-    # Keep at least one sample of each local class in train whenever possible.
     train_indices = []
     remaining_indices = []
-    for cls, idxs in grouped_indices.items():
+    for _, idxs in grouped_indices.items():
         if len(idxs) == 0:
             continue
         train_indices.append(int(idxs[0]))
@@ -169,8 +161,6 @@ def _safe_local_train_test_split(
     test_indices = remaining_indices[additional_train_needed:].tolist()
     train_indices.extend(additional_train)
 
-    # If the rare-class constraint consumed too many samples, test could become
-    # empty. In that case, move one non-essential sample from train to test.
     if len(test_indices) == 0:
         train_counts = pd.Series(partition.loc[train_indices, label_col].astype(int)).value_counts()
         movable = [
@@ -200,10 +190,10 @@ def get_partition(partition_id: int, num_partitions: int, dataset_path: str, imb
 
     dataset_name = Path(dataset_path).stem
     cache_prefix = cache_dir / (
-        f"part_{CACHE_VERSION}_{dataset_name}_{num_partitions}_{imbalance_factor}_{PARTITION_SEED}"
+        f"part_rf_{CACHE_VERSION}_{dataset_name}_{num_partitions}_{imbalance_factor}_{PARTITION_SEED}"
     )
     lock_file = cache_dir / (
-        f"data_prep_{CACHE_VERSION}_{dataset_name}_{num_partitions}_{imbalance_factor}_{PARTITION_SEED}.lock"
+        f"data_prep_rf_{CACHE_VERSION}_{dataset_name}_{num_partitions}_{imbalance_factor}_{PARTITION_SEED}.lock"
     )
     target_cache_file = Path(f"{cache_prefix}_{partition_id}.pkl")
 
@@ -212,10 +202,12 @@ def get_partition(partition_id: int, num_partitions: int, dataset_path: str, imb
             data = pd.read_csv(dataset_path, low_memory=False)
             data = data.dropna()
 
+            label_col = "Attack" if "Attack" in data.columns else "Traffic"
+
             partitions = create_noniid_partitions_weighted(
                 df=data,
                 num_clients=num_partitions,
-                label_col="Attack",
+                label_col=label_col,
                 imbalance_factor=imbalance_factor,
             )
 
@@ -226,33 +218,33 @@ def get_partition(partition_id: int, num_partitions: int, dataset_path: str, imb
     with open(target_cache_file, "rb") as f:
         partition = pickle.load(f)
 
-    local_y = partition["Attack"].astype(int).values
-    local_num_examples = len(partition)
-    local_data_quality = calculate_balance_quality(local_y)
+    label_col = "Attack" if "Attack" in partition.columns else "Traffic"
+
+    local_num_examples = int(len(partition))
+    local_data_quality = calculate_balance_quality(partition[label_col].astype(int).values)
 
     train, test = _safe_local_train_test_split(
         partition,
-        label_col="Attack",
+        label_col=label_col,
         test_size=0.2,
         random_state=PARTITION_SEED,
     )
 
-    # Intra-client leakage audit.
     train_idx = set(train.index.tolist())
     test_idx = set(test.index.tolist())
     if train_idx.intersection(test_idx):
         raise RuntimeError("Sample leakage detected between local train and test splits.")
 
-    X_train = train.drop(columns=["Attack"], errors="ignore").values
-    y_train = train["Attack"].astype(int).values
-    X_test = test.drop(columns=["Attack"], errors="ignore").values
-    y_test = test["Attack"].astype(int).values
+    X_train = train.drop(columns=[label_col], errors="ignore").values
+    y_train = train[label_col].astype(int).values
+    X_test = test.drop(columns=[label_col], errors="ignore").values
+    y_test = test[label_col].astype(int).values
 
     return X_train, y_train, X_test, y_test, local_num_examples, local_data_quality
 
 
 
-def calculate_uncertainty(model: xgb.XGBClassifier, X: np.ndarray) -> float:
+def calculate_uncertainty(model: RandomForestClassifier, X: np.ndarray) -> float:
     """Calculate the average entropy of the predictions."""
     try:
         probabilities = model.predict_proba(X)

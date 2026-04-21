@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rf-fedwla"
+version = "1.0.0"
+description = "Federated Hyperparameter Optimisation (HPO) for Random Forest using FedWLA strategy"
+license = "MIT"
+dependencies = [
+    "flwr[simulation]>=1.19.0",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "filelock"
+]
+
+[tool.flwr.app]
+publisher = "minivipiu"
+
+[tool.flwr.app.components]
+serverapp = "rf_fedwla.server:app"
+clientapp = "rf_fedwla.client:app"
+
+[tool.flwr.app.config]
+num-server-rounds = 10
+dataset-path = "../data/EdgeIIoT_cleaned.csv"
+imbalance-factor = 5
+num-partitions = 10

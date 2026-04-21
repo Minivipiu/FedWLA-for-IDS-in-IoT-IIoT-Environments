@@ -1,13 +1,8 @@
-"""Federated Client Module for LightGBM."""
-
-import warnings
+"""Federated Client Module for Decision Tree."""
 
 import numpy as np
-import lightgbm as lgb
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
-warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.utils.validation")
-warnings.filterwarnings("ignore", category=UserWarning, message=".*valid feature names.*")
 
 from flwr.client import NumPyClient, ClientApp
 from flwr.common import Context
@@ -18,7 +13,7 @@ RANDOM_SEARCH_SEED = 42
 
 
 class FlowerClient(NumPyClient):
-    """Federated client for LightGBM local hyperparameter optimisation."""
+    """Federated client for Decision Tree local hyperparameter optimisation."""
 
     def __init__(
         self,
@@ -40,43 +35,35 @@ class FlowerClient(NumPyClient):
 
         self.rng = np.random.default_rng(RANDOM_SEARCH_SEED + partition_id)
 
-        # Random initialisation, coherent with the manuscript Table 5.
-        self.init_max_depth = int(self.rng.integers(4, 9))
-        self.init_lr = round(float(self.rng.uniform(0.01, 0.1)), 4)
-        self.init_n_estimators = int(self.rng.integers(100, 501))
-        self.init_num_leaves = int(self.rng.integers(16, 31))  # [16, 30]
+        # Random initialisation, coherent with the manuscript.
+        self.init_max_depth = int(self.rng.integers(10, 51))
+        self.init_min_samples_split = int(self.rng.integers(2, 11))
+        self.init_min_samples_leaf = int(self.rng.integers(1, 6))
 
-    def _sanitise_params(self, params: np.ndarray) -> tuple[int, float, int, int]:
-        """Clamp hyperparameters to valid LightGBM ranges."""
+    def _sanitise_params(self, params: np.ndarray) -> tuple[int, int, int]:
+        """Clamp hyperparameters to valid Decision Tree ranges."""
         max_depth = max(1, int(np.round(float(params[0]))))
-        learning_rate = max(0.001, float(params[1]))
-        n_estimators = max(6, int(np.round(float(params[2]))))
-        num_leaves = max(2, int(np.round(float(params[3]))))
-        return max_depth, learning_rate, n_estimators, num_leaves
+        min_samples_split = max(2, int(np.round(float(params[1]))))
+        min_samples_leaf = max(1, int(np.round(float(params[2]))))
+        return max_depth, min_samples_split, min_samples_leaf
 
     def _build_model(
         self,
         max_depth: int,
-        learning_rate: float,
-        n_estimators: int,
-        num_leaves: int,
-    ) -> lgb.LGBMClassifier:
-        """Create a LightGBM model with the fixed settings used in the study."""
-        return lgb.LGBMClassifier(
+        min_samples_split: int,
+        min_samples_leaf: int,
+    ) -> DecisionTreeClassifier:
+        """Create a Decision Tree model with the fixed settings used in the study."""
+        return DecisionTreeClassifier(
             max_depth=max_depth,
-            learning_rate=learning_rate,
-            n_estimators=n_estimators,
-            num_leaves=num_leaves,
-            min_child_samples=80,
-            colsample_bytree=0.8,
-            subsample=0.8,
-            reg_lambda=2.0,
-            n_jobs=-1,
+            min_samples_split=min_samples_split,
+            min_samples_leaf=min_samples_leaf,
+            criterion="entropy",
+            class_weight="balanced",
             random_state=RANDOM_SEARCH_SEED + self.partition_id,
-            verbose=-1,
         )
 
-    def _fit_and_score(self, cfg: tuple[int, float, int, int]) -> tuple[lgb.LGBMClassifier, float]:
+    def _fit_and_score(self, cfg: tuple[int, int, int]) -> tuple[DecisionTreeClassifier, float]:
         """Train a model and compute weighted F1 on the local evaluation split."""
         model = self._build_model(*cfg)
         model.fit(self.X_train, self.y_train)
@@ -89,9 +76,8 @@ class FlowerClient(NumPyClient):
         hyperparams = np.array(
             [
                 self.init_max_depth,
-                self.init_lr,
-                self.init_n_estimators,
-                self.init_num_leaves,
+                self.init_min_samples_split,
+                self.init_min_samples_leaf,
             ],
             dtype=np.float32,
         )
@@ -107,21 +93,19 @@ class FlowerClient(NumPyClient):
         best_local_config = global_cfg
 
         # Local bounded random search around the current global configuration.
-        global_max_depth, global_lr, global_n_estimators, global_num_leaves = global_cfg
+        global_md, global_mss, global_msl = global_cfg
         for _ in range(3):
-            md = int(self.rng.integers(max(1, global_max_depth - 3), global_max_depth + 4))
-            lr_ = float(self.rng.uniform(max(0.001, global_lr * 0.5), global_lr * 1.5))
-            ne = int(self.rng.integers(max(6, global_n_estimators - 2), global_n_estimators + 3))
-            nl = int(self.rng.integers(max(2, global_num_leaves - 2), global_num_leaves + 3))
+            md = int(self.rng.integers(max(1, global_md - 3), global_md + 4))
+            mss = int(self.rng.integers(max(2, global_mss - 2), global_mss + 3))
+            msl = int(self.rng.integers(max(1, global_msl - 2), global_msl + 3))
 
-            candidate_cfg = (md, lr_, ne, nl)
+            candidate_cfg = (md, mss, msl)
             candidate_model, candidate_f1 = self._fit_and_score(candidate_cfg)
             if candidate_f1 > best_local_f1:
                 best_model = candidate_model
                 best_local_f1 = candidate_f1
                 best_local_config = candidate_cfg
 
-        # The round winner is the only configuration sent to the server.
         self.model = best_model
 
         y_pred_final = self.model.predict(self.X_test)
